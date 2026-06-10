@@ -1,171 +1,105 @@
-# Hardware-Aware-Push-CDN
-
-. Executive Summary
-A distributed content delivery network optimized for ultra-low latency live video streaming. The system bypasses standard HTTP polling by utilizing file-system event watchers to actively push video chunks (.ts) and playlists (.m3u8) from Origin to Edge nodes the millisecond they are generated. Traffic routing is dictated by a custom Load Balancer that monitors real-time hardware telemetry (CPU, RAM, Network I/O) from Edge nodes to ensure zero frame-drops under heavy load.
-
-2. Module Specifications
-Module 1: Push Origin (ngx_http_push_origin)
-Primary Role: Watch the file system for newly encoded video files and aggressively push them to registered downstream Edge servers.
-
-Core Triggers: * Listens on a dedicated socket for Edge nodes to register via the custom OEP (Origin Edge Protocol).
-
-Uses Linux inotify to detect IN_CLOSE_WRITE, IN_MOVED_TO, and IN_CREATE events in the designated video root directory.
-
-Processing Logic:
-
-Maintains a thread pool (max children) of connected Edge servers.
-
-When inotify detects a completed file write, the module parses the file path.
-
-If the file is a Master .m3u8, it parses the file for secondary playlist URLs.
-
-If the file is a .ts chunk, it queues it for transfer.
-
-Outputs / Actions:
-
-Uses libcurl to execute an HTTP PUT request, sending the raw file payload to the put_address provided by the Edge server.
-
-Configuration Parameters:
-
-ons_push_origin_root_directory: The directory FFmpeg/OBS writes to.
-
-ons_push_origin_port: Port to listen for OEP connections.
-
-ons_push_origin_max_children: Maximum allowed Edge nodes.
-
-ons_push_origin_net_max: Network bandwidth limits before denying new Edge nodes.
-
-Module 2: Push Edge (ngx_http_push_edge)
-Primary Role: Act as the ingest point for Origin pushes and the egress point for end-user video playback.
-
-Core Triggers:
-
-End-user HTTP GET requests for a specific video stream directory.
-
-Origin server HTTP PUT requests containing video files.
-
-Processing Logic:
-
-When a user requests a stream, the Edge checks if it is currently subscribed to that stream.
-
-If not, it opens a socket connection to the Origin and sends an OEP_JOIN command containing its own HTTP PUT address and the requested stream name.
-
-Maintains a timeout queue. If no users request a stream for a defined period (e.g., 300 seconds), it sends an OEP_LEAVE command to the Origin to stop receiving pushes for that stream to save bandwidth.
-
-Outputs / Actions:
-
-Writes received PUT payloads to the local disk/memory.
-
-Serves local files to the requesting users.
-
-Module 3: Session Manager / Hardware Monitor (ngx_http_session_manager)
-Primary Role: Generate unique viewer session IDs and continuously monitor the host machine's hardware saturation.
-
-Core Triggers:
-
-Intercepts incoming HTTP requests to append a ?sid= UUID parameter for tracking.
-
-A recurring timer event (ping period) triggers the hardware audit.
-
-Processing Logic:
-
-CPU: Parses /proc/stat to calculate usage percentages (totalUser, totalSys, totalIdle).
-
-RAM/Swap: Calls sysinfo() to calculate used vs. total memory.
-
-Disk: Calls statvfs() on the root directory to check capacity.
-
-Network: Parses /sys/class/net/{interface}/statistics/tx_bytes to measure outbound traffic against the server's known link speed.
-
-Calculates a unified "Hardware Score" aggregating these metrics (weighted towards CPU and Network).
-
-Outputs / Actions:
-
-Generates a JSON diagnostic string at ons_session_manager_json for observability.
-
-Opens a TCP socket to the Load Balancer and sends the hardware score via the custom LBP (Load Balancer Protocol).
-
-Module 4: Load Balancer (ngx_http_loadbalancer)
-Primary Role: Route new user sessions to the healthiest available Edge node based on real-time hardware telemetry.
-
-Core Triggers:
-
-Listens for LBP socket connections from Edge node Session Managers.
-
-End-user HTTP requests hitting the main entry point.
-
-Processing Logic:
-
-Maintains a shared memory queue of all active Edge peers.
-
-Parses incoming LBP reports to update the cpu, ram, swap, tx, disk, and sess metrics for each peer.
-
-Circuit Breaker: If a peer exceeds predefined thresholds (e.g., CPU > 80%), it flags the peer as down and temporarily removes it from the routing pool.
-
-Routing Policies:
-
-LL (Least Loaded): Scans the queue and selects the peer with the lowest overall hardware score.
-
-RR (Round Robin): Cycles sequentially through healthy peers.
-
-Outputs / Actions:
-
-Resolves the variable $ons_loadbalancer_result with the IP address of the chosen Edge server, allowing NGINX to issue an HTTP 301/302 Redirect.
-
-Module 5: Stream Push State Manager (ngx_http_stream_push)
-Primary Role: Distributed state management using Redis Pub/Sub to coordinate stream availability across multiple clusters.
-
-Core Triggers:
-
-User requests a stream file that is currently missing from the Edge's local disk.
-
-Processing Logic:
-
-Pauses the user's HTTP request and connects to the Redis Cluster.
-
-Uses PUBLISH {topic} {stream_directory}|Join to broadcast that this Edge needs the stream.
-
-Initiates an event loop to poll Redis (e.g., GET OSPP:{stream_directory}) to check if the stream state has become ACTIVE (meaning the Origin has started pushing it).
-
-Outputs / Actions:
-
-Once the file arrives, it resumes the HTTP request and serves the file.
-
-If the file never arrives (timeout), it returns an HTTP 504 Gateway Timeout.
-
-3. Data Contracts & Custom Protocols
-(Note for Go Rewrite: These custom protocols should be entirely replaced by gRPC/Protobufs or secure HTTP/JSON payloads, but this describes their current mechanical format).
-
-Origin Edge Protocol (OEP)
-Used by the Edge to tell the Origin to start or stop pushing a stream.
-
-Format: [Signature (3)][Command (1)][Req_Len (3)][Request_Dir (N)][Put_Len (3)][Put_Address (N)]
-
-Example: OEP1005/temp022http://172.16.23.8/put
-
-OEP: Signature
-
-1: Command (1 = JOIN, 2 = LEAVE)
-
-005/temp: Length and Name of stream directory
-
-022http://...: Length and URL of where the Origin should HTTP PUT the files.
-
-Load Balancer Protocol (LBP)
-Used by the Session Manager to report hardware telemetry to the Load Balancer.
-
-Register Format: [Signature (3)][Command (1)][Length (2)][Payload (N)]
-
-Command 1 = Register, 3 = Self-Register.
-
-Report Format: [Signature (3)][Command (1)][Delimiter (1)][CPU (3)][RAM (3)][SWAP (3)][TX (3)][DISK (3)][SESS (3)]
-
-Example: LBP21002073003000050010
-
-LBP: Signature
-
-2: Command (REPORT)
-
-1: Delimiter
-
-Values are packed as 3-digit percentages/metrics.
+# Hardware Aware Push CDN
+
+## 1. Executive Summary
+This project is a distributed, hardware-aware content delivery network optimized for ultra-low latency live video streaming. By transitioning from NGINX C modules to a modern **Go (Golang)** microservice architecture, the system safely and efficiently implements an active "push" model. It bypasses standard HTTP polling by utilizing file-system event watchers to aggressively push video chunks (`.ts`) and playlists (`.m3u8`) from the Origin to Edge nodes. Traffic routing is managed by a custom Load Balancer that monitors real-time hardware telemetry to ensure zero frame-drops under heavy load.
+
+---
+
+## 2. High-Level Architecture Flow
+
+1. **The Origin (Source):** A transcoder (e.g., FFmpeg) writes segmented live video (`.ts` and `.m3u8`) to a local directory.
+2. **The Origin Watcher:** The Go Origin Service actively monitors this directory. Upon file creation, it immediately pushes the file to all subscribed Edge nodes.
+3. **The Edge Nodes (Distributors):** Go Edge Services receive the pushed files, store them locally, and serve them to end-users over standard HTTP.
+4. **The Hardware Monitor:** Each Go Edge Service continuously calculates its own CPU, RAM, and Network saturation, reporting a unified "Hardware Score" to the Load Balancer.
+5. **The Load Balancer (Traffic Cop):** The Go Load Balancer receives user requests, evaluates the real-time hardware scores of all Edge nodes, and issues an HTTP 302 Redirect to the least-stressed node.
+
+---
+
+## 3. Module Specifications
+
+### 3.1. Origin Service (Replaces `ngx_http_push_origin`)
+**Primary Role:** Watch the file system for newly encoded video files and aggressively push them to registered downstream Edge servers.
+
+* **Core Triggers:**
+  * Uses `github.com/fsnotify/fsnotify` to detect file system events (`Write`, `Create`) in the designated video root directory.
+  * Listens for HTTP POST requests from Edge nodes requesting to subscribe/unsubscribe to specific streams (Replaces custom OEP protocol).
+* **Processing Logic:**
+  * Maintains a thread-safe registry (`sync.RWMutex`) of connected Edge servers and the streams they are subscribed to.
+  * When `fsnotify` detects a completed file write, the service parses the file path.
+  * If the file is a Master `.m3u8`, it parses the file for secondary playlist URLs.
+* **Outputs / Actions:**
+  * Uses Go's `net/http` client to execute concurrent HTTP `PUT` requests, sending the raw file payload to the `put_address` provided by the subscribed Edge servers.
+
+### 3.2. Edge Service (Replaces `ngx_http_push_edge`)
+**Primary Role:** Act as the ingest point for Origin pushes and the egress point for end-user video playback.
+
+* **Core Triggers:**
+  * End-user HTTP GET requests for video stream directories.
+  * Origin server HTTP PUT requests containing video files.
+* **Processing Logic:**
+  * **On User Request:** Checks if the requested stream is currently active. If not, it sends an HTTP POST to the Origin to subscribe to the stream.
+  * **Garbage Collection:** Maintains a timeout mechanism. If no users request a stream for a defined period (e.g., 300 seconds), it sends an HTTP POST to the Origin to unsubscribe, saving bandwidth.
+* **Outputs / Actions:**
+  * Provides an HTTP endpoint (e.g., `/ingest`) to receive and save PUT payloads from the Origin.
+  * Uses `http.FileServer` to serve the local video files to requesting users.
+
+### 3.3. Telemetry Service (Replaces `ngx_http_session_manager`)
+**Primary Role:** Continuously monitor the host machine's hardware saturation and report to the Load Balancer. *(Note: This runs as a goroutine within the Edge Service).*
+
+* **Core Triggers:**
+  * A Go `time.Ticker` triggers the hardware audit at defined intervals (e.g., every 2 seconds).
+* **Processing Logic:**
+  * Uses `github.com/shirou/gopsutil` to replace manual Linux `/proc` and `/sys` file parsing.
+  * Evaluates CPU usage, RAM/Swap usage, Disk capacity, and Network Interface (TX/RX) bandwidth limits.
+  * Calculates a unified "Hardware Score" aggregating these metrics.
+* **Outputs / Actions:**
+  * Sends an HTTP POST containing a JSON payload with the hardware metrics to the Load Balancer (Replaces custom LBP protocol).
+  * Exposes a `/metrics` endpoint in Prometheus format for observability.
+
+### 3.4. Load Balancer Service (Replaces `ngx_http_loadbalancer`)
+**Primary Role:** Route new user sessions to the healthiest available Edge node based on real-time hardware telemetry.
+
+* **Core Triggers:**
+  * HTTP POST updates from Edge node Telemetry Services.
+  * End-user HTTP requests hitting the main routing entry point.
+* **Processing Logic:**
+  * Maintains a thread-safe map (`map[string]EdgeNode`) of all active Edge peers and their current metrics.
+  * **Circuit Breaker:** If an Edge reports metrics exceeding predefined thresholds (e.g., CPU > 80%), it is temporarily flagged as `down`.
+  * **Routing Policy (Least Loaded):** Scans the map for healthy nodes and selects the peer with the lowest overall hardware score.
+* **Outputs / Actions:**
+  * Responds to the end-user with an HTTP 302 Redirect, pointing them to the chosen Edge server's URL.
+
+### 3.5. State Manager (Replaces `ngx_http_stream_push`)
+**Primary Role:** Distributed state management using Redis Pub/Sub to coordinate stream availability.
+
+* **Processing Logic:**
+  * Replaces the NGINX shared memory queue.
+  * Uses `github.com/go-redis/redis` to `PUBLISH` stream requests (Join/Leave) across multiple clusters.
+  * Edge nodes use `SUBSCRIBE` to listen for stream availability states (`ACTIVE`, `INACTIVE`) before attempting to serve missing files to users.
+
+---
+
+## 4. Step-by-Step Implementation Guide
+
+### Phase 1: Foundation & Telemetry
+1. **Initialize the Project:** Create a new Go module (`go mod init video-cdn`).
+2. **Build the Telemetry Package:** Install `gopsutil` (`go get github.com/shirou/gopsutil/v3`). Write a function that retrieves CPU, Memory, and Network I/O, calculates a score, and returns a JSON struct.
+3. **Build the Load Balancer Core:** Create an HTTP server. Implement a `/update` endpoint to receive the JSON from the Telemetry package. Store this data in a `sync.RWMutex` protected map.
+4. **Implement Routing:** Add a `/play` endpoint to the Load Balancer that reads the map, finds the lowest score, and returns an `http.Redirect`.
+
+### Phase 2: The Edge Ingest & Serve
+1. **Build the Edge Web Server:** Create an HTTP server with two main routes:
+   * `http.Handle("/stream/", http.StripPrefix("/stream/", http.FileServer(http.Dir("/var/cdn/video"))))` to serve files.
+   * `http.HandleFunc("/ingest", handleIngest)` to accept HTTP PUT requests.
+2. **Handle Ingest:** In `handleIngest`, read the `http.Request.Body` and write it to the local disk at `/var/cdn/video`. Ensure directory creation handles nested paths.
+3. **Integrate Telemetry:** Start the Telemetry function as a goroutine (`go startTelemetryLoop()`) when the Edge server boots, pointing it to the Load Balancer's `/update` endpoint.
+
+### Phase 3: The Origin Push Engine
+1. **Setup fsnotify:** Install `fsnotify` (`go get github.com/fsnotify/fsnotify`). Initialize a watcher on your encoder's output directory.
+2. **Edge Registry:** Create a simple HTTP endpoint on the Origin (`/subscribe`) where Edge nodes can register their IP addresses.
+3. **The Push Worker:** When `fsnotify` triggers a `Write` event, place the file path into a Go channel. Create a worker pool of goroutines that read from this channel, read the file from disk, and perform an `http.NewRequest("PUT", ...)` to every registered Edge node concurrently.
+
+### Phase 4: Modernization & Polish
+1. **gRPC Transition:** Replace the HTTP REST endpoints between the internal services (Telemetry updates, Edge subscriptions) with gRPC for better performance and strict typing.
+2. **Prometheus Metrics:** Import `github.com/prometheus/client_golang/prometheus`. Expose a `/metrics` route on all services to allow Grafana to scrape internal system health.
+3. **Dockerization:** Write a `Dockerfile` for each of the three services (Origin, Edge, Load Balancer) to ensure they can be easily deployed via Docker Compose or Kubernetes.
