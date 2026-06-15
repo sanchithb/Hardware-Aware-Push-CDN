@@ -86,7 +86,7 @@ Engineered for scale and fault tolerance, it features a concurrent file distribu
 
 ## Benchmarks
 
-Ultra low latency must be quantified. We benchmarked the Load Balancer's TLS termination, authentication, and routing redirect logic using k6 to simulate high concurrent viewership.
+Ultra low latency must be quantified. I benchmarked the Load Balancer's TLS termination, authentication, and routing redirect logic using k6 to simulate high concurrent viewership.
 
 The tests hit the Load Balancer with increasing Virtual Users (VUs) constantly requesting stream routing over 25 seconds.
 
