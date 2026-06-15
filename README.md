@@ -3,7 +3,7 @@
   <p>An ultra low latency, auto distributing Video Content Delivery Network written in Go.</p>
 </div>
 
-## Executive Summary
+## Summary
 
 This project is a distributed, hardware aware content delivery network built from the ground up in Go. Optimized for ultra low latency live video streaming, it solves the thundering herd problem and bandwidth waste of traditional polling based CDNs by implementing an active Push architecture. 
 
