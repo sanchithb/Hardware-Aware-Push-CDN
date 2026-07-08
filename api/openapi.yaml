@@ -1,0 +1,336 @@
+openapi: 3.0.3
+info:
+  title: hpcdn controller API
+  version: "1.0.0"
+  description: |
+    Control-plane API for hpcdn, a self-hosted hardware-aware push CDN.
+
+    Three access levels:
+    * **Public** — `/play/*` (HMAC-signed), `/healthz`, `/metrics`.
+    * **Node** — enrollment and heartbeats, authenticated by join token /
+      node secret.
+    * **Admin** — everything else under `/api/v1`, authenticated with
+      `Authorization: Bearer <admin key>` (`hpa_…`).
+servers:
+  - url: http://localhost:8080
+security:
+  - adminKey: []
+components:
+  securitySchemes:
+    adminKey:
+      type: http
+      scheme: bearer
+      description: Admin API key (hpa_…), shown once at first controller start.
+  schemas:
+    Error:
+      type: object
+      properties: { error: { type: string } }
+    RegisterRequest:
+      type: object
+      required: [join_token, kind, public_url]
+      properties:
+        join_token: { type: string, example: "hpj_…" }
+        kind: { type: string, enum: [edge, origin] }
+        name: { type: string }
+        public_url: { type: string, example: "https://edge1.pop-nyc.example:8081" }
+        region: { type: string, example: us-east }
+        capacity_conns: { type: integer, default: 1000 }
+        version: { type: string }
+    RegisterResponse:
+      type: object
+      properties:
+        node_id: { type: string }
+        node_secret: { type: string, description: shown once; sent on every heartbeat }
+        signing_key: { type: string, description: cluster HMAC key for local playback validation }
+        ingest_key: { type: string, description: cluster key authenticating push/pull between nodes }
+        heartbeat_interval_seconds: { type: integer }
+    Heartbeat:
+      type: object
+      description: Cumulative counters since process start; controller derives rates.
+      properties:
+        cpu_percent: { type: number }
+        ram_percent: { type: number }
+        disk_percent: { type: number }
+        goroutines: { type: integer }
+        active_conns: { type: integer }
+        bytes_out: { type: integer, format: int64 }
+        bytes_in: { type: integer, format: int64 }
+        cache_hits: { type: integer, format: int64 }
+        cache_misses: { type: integer, format: int64 }
+        cache_bytes: { type: integer, format: int64 }
+        cache_files: { type: integer }
+        uptime_seconds: { type: integer, format: int64 }
+        version: { type: string }
+        ack_seq: { type: integer, format: int64, description: acknowledges directives with seq <= ack_seq }
+    HeartbeatResponse:
+      type: object
+      properties:
+        directives:
+          type: array
+          items:
+            type: object
+            properties:
+              seq: { type: integer, format: int64 }
+              type: { type: string, enum: [purge, drain, undrain] }
+              path: { type: string }
+        edges:
+          type: array
+          description: sent to origins — current push targets
+          items:
+            type: object
+            properties:
+              node_id: { type: string }
+              ingest_url: { type: string }
+        origins:
+          type: array
+          description: sent to edges — pull-through sources
+          items:
+            type: object
+            properties:
+              node_id: { type: string }
+              fetch_url: { type: string }
+    NodeStatus:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [edge, origin] }
+        name: { type: string }
+        public_url: { type: string }
+        region: { type: string }
+        capacity_conns: { type: integer }
+        version: { type: string }
+        state: { type: string, enum: [healthy, degraded, draining, ejected, offline] }
+        draining: { type: boolean }
+        last_seen: { type: string, format: date-time }
+        joined_at: { type: string, format: date-time }
+        score: { type: number, description: routing score, lower is better }
+        cpu_percent: { type: number }
+        ram_percent: { type: number }
+        disk_percent: { type: number }
+        active_conns: { type: integer }
+        bytes_out_rate: { type: number, description: bytes/sec }
+        bytes_in_rate: { type: number }
+        hit_ratio: { type: number }
+        cache_bytes: { type: integer, format: int64 }
+        cache_files: { type: integer }
+        uptime_seconds: { type: integer, format: int64 }
+        routed_total: { type: integer, format: int64 }
+    TelemetrySample:
+      type: object
+      properties:
+        t: { type: string, format: date-time }
+        cpu: { type: number }
+        ram: { type: number }
+        disk: { type: number }
+        conns: { type: integer }
+        out_rate: { type: number }
+        in_rate: { type: number }
+        hit: { type: number }
+    Settings:
+      type: object
+      properties:
+        cpu_weight: { type: number, default: 0.5 }
+        ram_weight: { type: number, default: 0.2 }
+        conn_weight: { type: number, default: 0.3 }
+        region_penalty: { type: number, default: 30 }
+        saturation_score: { type: number, default: 75 }
+        ewma_alpha: { type: number, default: 0.3 }
+        heartbeat_ttl_seconds: { type: integer, default: 10 }
+        eject_after_missed: { type: integer, default: 3 }
+        panic_threshold: { type: number, default: 0.5 }
+        sign_ttl_seconds: { type: integer, default: 21600 }
+        affinity_enabled: { type: boolean, default: true }
+    JoinTokenInfo:
+      type: object
+      properties:
+        id: { type: string }
+        token: { type: string, description: only present in the creation response }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+        max_uses: { type: integer }
+        uses: { type: integer }
+    ClusterStats:
+      type: object
+      properties:
+        nodes: { type: integer }
+        edges_healthy: { type: integer }
+        edges_total: { type: integer }
+        origins_total: { type: integer }
+        routed_total: { type: integer, format: int64 }
+        routed_per_sec: { type: number }
+        bytes_out_rate: { type: number }
+        hit_ratio: { type: number }
+        cache_bytes: { type: integer, format: int64 }
+        uptime_seconds: { type: integer, format: int64 }
+
+paths:
+  /play/{path}:
+    get:
+      security: []
+      summary: Route a signed playback request to the best edge
+      description: |
+        Validates `hpe`/`hps`/`hpx` signature params, picks an edge
+        (rendezvous affinity + bounded loads + region penalty), then 302s
+        (or proxies, per `routing_mode`). Optional `X-User-Region` header
+        steers region selection.
+      parameters:
+        - { name: path, in: path, required: true, schema: { type: string }, example: stream1/index.m3u8 }
+        - { name: hpe, in: query, required: true, schema: { type: string }, description: unix expiry }
+        - { name: hps, in: query, required: false, schema: { type: string }, description: signed path scope }
+        - { name: hpx, in: query, required: true, schema: { type: string }, description: base64url HMAC-SHA256 }
+        - { name: X-User-Region, in: header, required: false, schema: { type: string } }
+      responses:
+        "302": { description: redirect to the selected edge }
+        "403": { description: invalid or expired signature, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: no eligible edge nodes }
+  /healthz:
+    get: { security: [], summary: Liveness probe, responses: { "200": { description: ok } } }
+  /metrics:
+    get: { security: [], summary: Prometheus exposition, responses: { "200": { description: text format 0.0.4 } } }
+
+  /api/v1/nodes/register:
+    post:
+      security: []
+      summary: Enroll a node with a join token
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/RegisterRequest" } } }
+      responses:
+        "201": { description: enrolled, content: { application/json: { schema: { $ref: "#/components/schemas/RegisterResponse" } } } }
+        "401": { description: invalid or exhausted join token }
+  /api/v1/nodes/{id}/heartbeat:
+    post:
+      security: []
+      summary: Node telemetry + liveness (authenticated by X-HPCDN-Node-Secret)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: X-HPCDN-Node-Secret, in: header, required: true, schema: { type: string } }
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/Heartbeat" } } }
+      responses:
+        "200": { description: directives + topology, content: { application/json: { schema: { $ref: "#/components/schemas/HeartbeatResponse" } } } }
+        "401": { description: unknown node or bad secret }
+
+  /api/v1/stats:
+    get:
+      summary: Cluster overview
+      responses:
+        "200": { description: aggregates, content: { application/json: { schema: { $ref: "#/components/schemas/ClusterStats" } } } }
+  /api/v1/nodes:
+    get:
+      summary: List nodes with live telemetry
+      responses:
+        "200": { description: nodes, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/NodeStatus" } } } } }
+  /api/v1/nodes/{id}:
+    get:
+      summary: One node
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: node, content: { application/json: { schema: { $ref: "#/components/schemas/NodeStatus" } } } }
+        "404": { description: not found }
+    delete:
+      summary: Deregister a node
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "204": { description: removed }, "404": { description: not found } }
+  /api/v1/nodes/{id}/telemetry:
+    get:
+      summary: Recent telemetry history (console charts)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: samples, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/TelemetrySample" } } } } }
+  /api/v1/nodes/{id}/drain:
+    post:
+      summary: Remove a node from routing gracefully
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: draining }, "404": { description: not found } }
+  /api/v1/nodes/{id}/undrain:
+    post:
+      summary: Return a node to the routing pool
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: resumed }, "404": { description: not found } }
+
+  /api/v1/settings:
+    get:
+      summary: Current routing settings
+      responses:
+        "200": { description: settings, content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } } }
+    put:
+      summary: Replace routing settings (applied live)
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } }
+      responses: { "200": { description: applied }, "400": { description: validation error } }
+
+  /api/v1/tokens:
+    get:
+      summary: List join tokens (never returns plaintext)
+      responses:
+        "200": { description: tokens, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/JoinTokenInfo" } } } } }
+    post:
+      summary: Mint a join token (plaintext returned once)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+                ttl_seconds: { type: integer, description: 0 = never expires }
+                max_uses: { type: integer, description: 0 = unlimited }
+      responses:
+        "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/JoinTokenInfo" } } } }
+  /api/v1/tokens/{id}:
+    delete:
+      summary: Revoke a join token
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "204": { description: revoked }, "404": { description: not found } }
+
+  /api/v1/sign:
+    post:
+      summary: Mint a signed playback URL
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string, example: /play/stream1/index.m3u8 }
+                scope: { type: string, description: "path prefix the signature covers; default: the stream directory" }
+                ttl_seconds: { type: integer, description: default from settings }
+      responses:
+        "200":
+          description: signed URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string }
+                  expires_at: { type: string, format: date-time }
+  /api/v1/purge:
+    post:
+      summary: Queue a purge on every edge
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string, example: stream1 }
+      responses:
+        "200": { description: "count of edges notified" }
+  /api/v1/events:
+    get:
+      summary: Server-Sent Events stream of cluster events
+      responses:
+        "200": { description: "text/event-stream; replays recent events, then live" }
+  /api/v1/logs:
+    get:
+      summary: Recent controller log entries (ring buffer)
+      responses:
+        "200": { description: entries }
+  /api/v1/whoami:
+    get:
+      summary: Validate an admin key
+      responses: { "200": { description: valid }, "401": { description: invalid } }
