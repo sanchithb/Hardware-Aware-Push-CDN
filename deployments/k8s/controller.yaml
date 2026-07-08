@@ -1,0 +1,62 @@
+# hpcdn controller — control plane Deployment + Service.
+# The admin key is supplied via a Secret so it survives pod replacement:
+#   kubectl create secret generic hpcdn-admin --from-literal=key=hpa_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hpcdn-controller
+  labels: { app: hpcdn, role: controller }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hpcdn, role: controller }
+  template:
+    metadata:
+      labels: { app: hpcdn, role: controller }
+    spec:
+      containers:
+        - name: controller
+          image: ghcr.io/sanchithb/hpcdn:latest
+          args: ["controller"]
+          env:
+            - name: HPCDN_LOG_FORMAT
+              value: json
+            - name: HPCDN_ADMIN_KEY
+              valueFrom:
+                secretKeyRef: { name: hpcdn-admin, key: key }
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/hpcdn }
+          resources:
+            requests: { cpu: 250m, memory: 128Mi }
+            limits: { memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: hpcdn-controller-data }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hpcdn-controller-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hpcdn-controller
+  labels: { app: hpcdn, role: controller }
+spec:
+  selector: { app: hpcdn, role: controller }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

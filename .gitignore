@@ -1,0 +1,9 @@
+bin/
+dist/
+content/
+*.exe
+*.log
+node_modules/
+hpcdn-controller.yaml
+hpcdn-edge.yaml
+hpcdn-origin.yaml

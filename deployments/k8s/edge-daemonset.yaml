@@ -1,0 +1,52 @@
+# hpcdn edge — DaemonSet so every (labeled) node in the cluster becomes a
+# PoP, using hostPort + node-local storage for the cache.
+# Join token comes from a Secret:
+#   kubectl create secret generic hpcdn-join --from-literal=token=hpj_…
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: hpcdn-edge
+  labels: { app: hpcdn, role: edge }
+spec:
+  selector:
+    matchLabels: { app: hpcdn, role: edge }
+  template:
+    metadata:
+      labels: { app: hpcdn, role: edge }
+    spec:
+      nodeSelector:
+        hpcdn.io/edge: "true"
+      containers:
+        - name: edge
+          image: ghcr.io/sanchithb/hpcdn:latest
+          args: ["edge", "--cache-max-bytes", "53687091200"] # 50 GiB
+          env:
+            - name: HPCDN_CONTROLLER_URL
+              value: http://hpcdn-controller:8080
+            - name: HPCDN_JOIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hpcdn-join, key: token }
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+            - name: NODE_IP
+              valueFrom:
+                fieldRef: { fieldPath: status.hostIP }
+            - name: HPCDN_NAME
+              value: "$(NODE_NAME)"
+            - name: HPCDN_PUBLIC_URL
+              value: "http://$(NODE_IP):8081"
+            - name: HPCDN_REGION
+              value: "default" # set per node pool via kustomize/overlays
+          ports:
+            - { containerPort: 8081, hostPort: 8081 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8081 }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: cache, mountPath: /var/lib/hpcdn }
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: cache
+          hostPath: { path: /var/lib/hpcdn-edge, type: DirectoryOrCreate }

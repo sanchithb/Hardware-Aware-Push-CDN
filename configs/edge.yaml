@@ -1,0 +1,45 @@
+# hpcdn edge node configuration.
+# Run with: hpcdn edge --config configs/edge.yaml
+
+listen: ":8081"
+
+# REQUIRED in real deployments: the URL viewers use to reach this edge.
+public_url: ""
+
+controller_url: "http://127.0.0.1:8080"
+
+# Enrollment token (only needed on first start; identity persists in
+# data_dir afterwards). Mint with: hpcdn tokens create
+join_token: ""
+
+name: ""          # default: hostname
+region: ""        # PoP label for geo routing, e.g. us-east
+
+data_dir: ""
+cache_dir: ""     # default: <data_dir>/cache
+
+# Cache budget in bytes; SIEVE eviction keeps usage below it.
+cache_max_bytes: 10737418240   # 10 GiB
+
+# Soft concurrent-connection capacity used in load scoring.
+capacity_conns: 1000
+
+# How long /play holds a request for a segment that has not arrived yet
+# (live-edge race) before giving up. Origin pull-through runs in parallel.
+hold_timeout: 3s
+
+# Cache-Control TTLs sent to players. Playlists must stay short so live
+# viewers see new segments; segments are immutable once written.
+playlist_ttl: 2s
+segment_ttl: 8760h
+
+log_level: info
+log_format: text
+
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+
+# Skip TLS verification for intra-cluster calls (self-signed lab setups).
+insecure_skip_verify: false

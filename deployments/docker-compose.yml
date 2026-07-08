@@ -1,0 +1,84 @@
+# A complete hpcdn lab cluster: controller + origin + two edge PoPs.
+#
+#   1. docker compose -f deployments/docker-compose.yml up -d --build
+#   2. docker compose logs controller | grep hpa_        # grab the admin key
+#   3. Create a join token, export it, restart nodes:
+#        export HPCDN_API_KEY=hpa_…
+#        docker compose exec controller hpcdn tokens create --note lab
+#        HPCDN_JOIN_TOKEN=hpj_… docker compose up -d
+#   4. Console: http://localhost:8080  — drop HLS files into ./content
+#
+# The nodes wait for the controller and retry enrollment, so bringing the
+# whole stack up with a pre-made token in the environment "just works".
+
+services:
+  controller:
+    build:
+      context: ..
+      dockerfile: deployments/docker/Dockerfile
+    command: ["controller", "--listen", ":8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - controller-data:/var/lib/hpcdn
+    environment:
+      HPCDN_LOG_FORMAT: json
+    restart: unless-stopped
+
+  origin:
+    build:
+      context: ..
+      dockerfile: deployments/docker/Dockerfile
+    command: ["origin", "--watch-dir", "/content"]
+    environment:
+      HPCDN_CONTROLLER_URL: http://controller:8080
+      HPCDN_PUBLIC_URL: http://origin:9000
+      HPCDN_JOIN_TOKEN: ${HPCDN_JOIN_TOKEN:-}
+      HPCDN_NAME: origin-1
+    volumes:
+      - ../content:/content
+      - origin-data:/var/lib/hpcdn
+    depends_on: [controller]
+    restart: unless-stopped
+
+  edge-east:
+    build:
+      context: ..
+      dockerfile: deployments/docker/Dockerfile
+    command: ["edge"]
+    ports:
+      - "8081:8081"
+    environment:
+      HPCDN_CONTROLLER_URL: http://controller:8080
+      HPCDN_PUBLIC_URL: http://localhost:8081
+      HPCDN_JOIN_TOKEN: ${HPCDN_JOIN_TOKEN:-}
+      HPCDN_NAME: edge-east-1
+      HPCDN_REGION: us-east
+    volumes:
+      - edge-east-data:/var/lib/hpcdn
+    depends_on: [controller]
+    restart: unless-stopped
+
+  edge-west:
+    build:
+      context: ..
+      dockerfile: deployments/docker/Dockerfile
+    command: ["edge"]
+    ports:
+      - "8082:8081"
+    environment:
+      HPCDN_CONTROLLER_URL: http://controller:8080
+      HPCDN_PUBLIC_URL: http://localhost:8082
+      HPCDN_JOIN_TOKEN: ${HPCDN_JOIN_TOKEN:-}
+      HPCDN_NAME: edge-west-1
+      HPCDN_REGION: us-west
+    volumes:
+      - edge-west-data:/var/lib/hpcdn
+    depends_on: [controller]
+    restart: unless-stopped
+
+volumes:
+  controller-data:
+  origin-data:
+  edge-east-data:
+  edge-west-data:

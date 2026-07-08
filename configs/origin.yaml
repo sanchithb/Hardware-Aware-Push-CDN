@@ -1,0 +1,42 @@
+# hpcdn origin node configuration.
+# Run with: hpcdn origin --config configs/origin.yaml
+
+listen: ":9000"
+
+# How edges reach this origin for pull-through fetches.
+public_url: ""
+
+controller_url: "http://127.0.0.1:8080"
+join_token: ""
+
+name: ""
+region: ""
+
+data_dir: ""
+
+# The content root. Everything written here is watched and pushed to all
+# edges; anything not pushed stays reachable via pull-through.
+watch_dir: "./content"
+
+# Concurrent push workers (each file fans out to all edges in parallel).
+push_workers: 8
+
+# Delivery attempts per file per edge (exponential backoff between).
+push_retries: 3
+
+# Quiet window after the last write before a file is pushed — lets
+# encoders finish writing a segment before it ships.
+debounce_window: 200ms
+
+# Only these extensions are eagerly pushed; empty list = push everything.
+push_extensions: [".ts", ".m3u8", ".mp4", ".m4s", ".mpd", ".vtt"]
+
+log_level: info
+log_format: text
+
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+
+insecure_skip_verify: false

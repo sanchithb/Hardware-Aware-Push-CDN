@@ -1,0 +1,61 @@
+# hpcdn origin — Deployment with a content volume. Point the volume at
+# your encoder's output (or replace with an object-store sync sidecar).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hpcdn-origin
+  labels: { app: hpcdn, role: origin }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hpcdn, role: origin }
+  template:
+    metadata:
+      labels: { app: hpcdn, role: origin }
+    spec:
+      containers:
+        - name: origin
+          image: ghcr.io/sanchithb/hpcdn:latest
+          args: ["origin", "--watch-dir", "/content"]
+          env:
+            - name: HPCDN_CONTROLLER_URL
+              value: http://hpcdn-controller:8080
+            - name: HPCDN_PUBLIC_URL
+              value: http://hpcdn-origin:9000
+            - name: HPCDN_JOIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hpcdn-join, key: token }
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet: { path: /healthz, port: 9000 }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: content, mountPath: /content }
+            - { name: data, mountPath: /var/lib/hpcdn }
+          resources:
+            requests: { cpu: 250m, memory: 128Mi }
+      volumes:
+        - name: content
+          persistentVolumeClaim: { claimName: hpcdn-content }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hpcdn-origin
+  labels: { app: hpcdn, role: origin }
+spec:
+  selector: { app: hpcdn, role: origin }
+  ports:
+    - { name: http, port: 9000, targetPort: 9000 }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hpcdn-content
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 20Gi }

@@ -1,0 +1,38 @@
+# hpcdn controller configuration.
+# Precedence: defaults < this file < HPCDN_* environment < flags.
+# Run with: hpcdn controller --config configs/controller.yaml
+
+# Address the control plane binds. It serves the admin API, the web
+# console, Prometheus metrics and the /play routing endpoint.
+listen: ":8080"
+
+# How clients and nodes reach this controller (used in playlist failover
+# rewrites and enrollment instructions). Required for multi-machine setups.
+public_url: ""
+
+# State directory: cluster keys, enrolled nodes, join tokens, settings.
+# Default: <os config dir>/hpcdn/controller
+data_dir: ""
+
+log_level: info   # debug | info | warn | error
+log_format: text  # text | json
+
+# Set explicitly for infrastructure-as-code; leave empty to generate one
+# on first boot (printed once, stored hashed).
+admin_key: ""
+
+# redirect: 302 the player to the edge (recommended; scales best).
+# proxy:    stream through the controller (single public hostname).
+routing_mode: redirect
+
+# Heartbeat samples kept per node for the console charts (2s interval;
+# 360 samples = 12 minutes).
+telemetry_history: 360
+
+# Seconds between node heartbeats.
+heartbeat_interval: 2
+
+tls:
+  enabled: false
+  cert_file: ""   # empty + enabled=true → in-memory self-signed cert
+  key_file: ""
